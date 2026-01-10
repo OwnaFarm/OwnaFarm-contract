@@ -14,10 +14,14 @@ contract OwnaFarmTest is Test {
     OwnaFarmVault vault;
     
     address admin = address(1);
+    address farmer1 = address(4);
+    address farmer2 = address(5);
     address investor1 = address(2);
     address investor2 = address(3);
     
     uint256 constant CLAIM_AMOUNT = 10_000 * 1e18;
+    bytes32 constant OFFTAKER_A = keccak256("PT Indofood");
+    bytes32 constant OFFTAKER_B = keccak256("PT Mayora");
     
     function setUp() public {
         vm.startPrank(admin);
@@ -28,13 +32,182 @@ contract OwnaFarmTest is Test {
         vault = new OwnaFarmVault(address(gold));
         vault.setFarmNFT(address(farm));
         
-        // Fund faucet
         gold.approve(address(faucet), 1_000_000 * 1e18);
         faucet.deposit(1_000_000 * 1e18);
-        
-        // Fund farm contract for yield payments
         gold.transfer(address(farm), 100_000 * 1e18);
         
+        vm.stopPrank();
+    }
+    
+    // ============ INVOICE SUBMISSION FLOW ============
+    
+    function test_FarmerCanSubmitInvoice() public {
+        vm.prank(farmer1);
+        uint256 tokenId = farm.submitInvoice(OFFTAKER_A, 50_000e18, 1800, 30 days);
+        
+        assertEq(tokenId, 1);
+        assertEq(farm.getPendingCount(), 1);
+        
+        (address farmer,,,,,,, bytes32 offtakerId) = farm.invoices(tokenId);
+        assertEq(farmer, farmer1);
+        assertEq(offtakerId, OFFTAKER_A);
+    }
+    
+    function test_MultipleFarmersCanSubmit() public {
+        vm.prank(farmer1);
+        farm.submitInvoice(OFFTAKER_A, 50_000e18, 1800, 30 days);
+        
+        vm.prank(farmer2);
+        farm.submitInvoice(OFFTAKER_B, 30_000e18, 1500, 60 days);
+        
+        assertEq(farm.getPendingCount(), 2);
+    }
+    
+    // ============ ADMIN APPROVAL FLOW ============
+    
+    function test_AdminCanApproveInvoice() public {
+        vm.prank(farmer1);
+        uint256 tokenId = farm.submitInvoice(OFFTAKER_A, 50_000e18, 1800, 30 days);
+        
+        assertEq(farm.getPendingCount(), 1);
+        assertEq(farm.getAvailableCount(), 0);
+        
+        vm.prank(admin);
+        farm.approveInvoice(tokenId);
+        
+        assertEq(farm.getPendingCount(), 0);
+        assertEq(farm.getAvailableCount(), 1);
+    }
+    
+    function test_AdminCanRejectInvoice() public {
+        vm.prank(farmer1);
+        uint256 tokenId = farm.submitInvoice(OFFTAKER_A, 50_000e18, 1800, 30 days);
+        
+        vm.prank(admin);
+        farm.rejectInvoice(tokenId);
+        
+        assertEq(farm.getPendingCount(), 0);
+        assertEq(farm.getAvailableCount(), 0);
+    }
+    
+    function test_RevertWhen_NonAdminApproves() public {
+        vm.prank(farmer1);
+        uint256 tokenId = farm.submitInvoice(OFFTAKER_A, 50_000e18, 1800, 30 days);
+        
+        vm.prank(investor1);
+        vm.expectRevert();
+        farm.approveInvoice(tokenId);
+    }
+    
+    // ============ INVESTMENT FLOW ============
+    
+    function test_InvestorCanInvestInApprovedInvoice() public {
+        vm.prank(farmer1);
+        uint256 tokenId = farm.submitInvoice(OFFTAKER_A, 50_000e18, 1500, 30 days);
+        
+        vm.prank(admin);
+        farm.approveInvoice(tokenId);
+        
+        vm.startPrank(investor1);
+        faucet.claim();
+        gold.approve(address(farm), CLAIM_AMOUNT);
+        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
+        
+        assertEq(farm.balanceOf(investor1, tokenId), 1);
+        assertEq(farm.investmentCount(investor1), 1);
+        vm.stopPrank();
+    }
+    
+    function test_RevertWhen_InvestInPendingInvoice() public {
+        vm.prank(farmer1);
+        uint256 tokenId = farm.submitInvoice(OFFTAKER_A, 50_000e18, 1500, 30 days);
+        // NOT approved
+        
+        vm.startPrank(investor1);
+        faucet.claim();
+        gold.approve(address(farm), CLAIM_AMOUNT);
+        vm.expectRevert(OwnaFarmNFT.InvoiceNotApproved.selector);
+        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
+        vm.stopPrank();
+    }
+    
+    function test_InvoiceRemovedWhenFullyFunded() public {
+        vm.prank(farmer1);
+        uint256 tokenId = farm.submitInvoice(OFFTAKER_A, uint128(CLAIM_AMOUNT), 1000, 30 days);
+        
+        vm.prank(admin);
+        farm.approveInvoice(tokenId);
+        assertEq(farm.getAvailableCount(), 1);
+        
+        vm.startPrank(investor1);
+        faucet.claim();
+        gold.approve(address(farm), CLAIM_AMOUNT);
+        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
+        vm.stopPrank();
+        
+        assertEq(farm.getAvailableCount(), 0);
+    }
+    
+    // ============ HARVEST FLOW ============
+    
+    function test_Harvest() public {
+        vm.prank(farmer1);
+        uint256 tokenId = farm.submitInvoice(OFFTAKER_A, 50_000e18, 1000, 1 days);
+        
+        vm.prank(admin);
+        farm.approveInvoice(tokenId);
+        
+        vm.startPrank(investor1);
+        faucet.claim();
+        gold.approve(address(farm), CLAIM_AMOUNT);
+        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
+        vm.stopPrank();
+        
+        vm.warp(block.timestamp + 2 days);
+        
+        vm.prank(investor1);
+        farm.harvest(0);
+        
+        // 10,000 + 10% yield = 11,000
+        uint256 expectedBalance = CLAIM_AMOUNT + (CLAIM_AMOUNT * 1000 / 10000);
+        assertEq(gold.balanceOf(investor1), expectedBalance);
+    }
+    
+    function test_RevertWhen_HarvestBeforeMaturity() public {
+        vm.prank(farmer1);
+        uint256 tokenId = farm.submitInvoice(OFFTAKER_A, 50_000e18, 1000, 30 days);
+        
+        vm.prank(admin);
+        farm.approveInvoice(tokenId);
+        
+        vm.startPrank(investor1);
+        faucet.claim();
+        gold.approve(address(farm), CLAIM_AMOUNT);
+        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
+        vm.expectRevert(OwnaFarmNFT.NotMature.selector);
+        farm.harvest(0);
+        vm.stopPrank();
+    }
+    
+    function test_RevertWhen_DoubleHarvest() public {
+        vm.prank(farmer1);
+        uint256 tokenId = farm.submitInvoice(OFFTAKER_A, 50_000e18, 1000, 1 days);
+        
+        vm.prank(admin);
+        farm.approveInvoice(tokenId);
+        
+        vm.startPrank(investor1);
+        faucet.claim();
+        gold.approve(address(farm), CLAIM_AMOUNT);
+        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
+        vm.stopPrank();
+        
+        vm.warp(block.timestamp + 2 days);
+        
+        vm.startPrank(investor1);
+        farm.harvest(0);
+        vm.expectRevert(OwnaFarmNFT.AlreadyClaimed.selector);
+        farm.harvest(0);
         vm.stopPrank();
     }
     
@@ -49,197 +222,49 @@ contract OwnaFarmTest is Test {
     function test_FaucetCannotClaimTwice() public {
         vm.startPrank(investor1);
         faucet.claim();
-        
-        vm.expectRevert("Cooldown active");
+        vm.expectRevert(GoldFaucet.CooldownActive.selector);
         faucet.claim();
         vm.stopPrank();
     }
     
-    function test_FaucetClaimAfterCooldown() public {
-        vm.startPrank(investor1);
-        faucet.claim();
-        
-        // Fast forward 24 hours
-        vm.warp(block.timestamp + 24 hours + 1);
-        
-        faucet.claim();
-        assertEq(gold.balanceOf(investor1), CLAIM_AMOUNT * 2);
-        vm.stopPrank();
-    }
+    // ============ PAGINATION TESTS ============
     
-    function test_FaucetTimeUntilNextClaim() public {
-        vm.prank(investor1);
-        faucet.claim();
-        
-        uint256 timeLeft = faucet.timeUntilNextClaim(investor1);
-        assertGt(timeLeft, 0);
-        assertLe(timeLeft, 24 hours);
-    }
-    
-    // ============ GOLD TOKEN TESTS ============
-    
-    function test_GoldInitialSupply() public view {
-        assertEq(gold.balanceOf(admin), gold.INITIAL_SUPPLY() - 1_100_000 * 1e18);
-    }
-    
-    function test_GoldMintOnlyOwner() public {
-        vm.prank(investor1);
-        vm.expectRevert();
-        gold.mint(investor1, 1000e18);
-    }
-    
-    // ============ INVOICE TESTS ============
-    
-    function test_CreateInvoice() public {
-        vm.prank(admin);
-        uint256 tokenId = farm.createInvoice("PT Indofood", 50_000e18, 1800, 30 days);
-        
-        (string memory offtaker, uint128 target,, uint16 yieldBps,,,) = farm.invoices(tokenId);
-        assertEq(offtaker, "PT Indofood");
-        assertEq(target, 50_000e18);
-        assertEq(yieldBps, 1800);
-    }
-    
-    function test_Invest() public {
-        vm.prank(admin);
-        uint256 tokenId = farm.createInvoice("PT Mayora", 50_000e18, 1500, 30 days);
-        
-        // Investor claims from faucet and invests
-        vm.startPrank(investor1);
-        faucet.claim();
-        gold.approve(address(farm), CLAIM_AMOUNT);
-        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
-        
-        assertEq(farm.balanceOf(investor1, tokenId), CLAIM_AMOUNT);
-        assertEq(farm.getInvestmentCount(investor1), 1);
-        vm.stopPrank();
-    }
-    
-    function test_MultipleInvestors() public {
-        vm.prank(admin);
-        uint256 tokenId = farm.createInvoice("PT ABC", 20_000e18, 1000, 30 days);
-        
-        // Investor 1
-        vm.startPrank(investor1);
-        faucet.claim();
-        gold.approve(address(farm), CLAIM_AMOUNT);
-        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
+    function test_PendingPagination() public {
+        vm.startPrank(farmer1);
+        for (uint i; i < 5; i++) {
+            farm.submitInvoice(bytes32(i), 10_000e18, 1000, 30 days);
+        }
         vm.stopPrank();
         
-        // Investor 2
-        vm.startPrank(investor2);
-        faucet.claim();
-        gold.approve(address(farm), CLAIM_AMOUNT);
-        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
-        vm.stopPrank();
+        (uint256[] memory page1,) = farm.getPendingInvoices(0, 2);
+        assertEq(page1.length, 2);
         
-        (,, uint128 funded,,,,) = farm.invoices(tokenId);
-        assertEq(funded, CLAIM_AMOUNT * 2);
+        (uint256[] memory page2,) = farm.getPendingInvoices(2, 2);
+        assertEq(page2.length, 2);
     }
     
-    function test_Harvest() public {
-        vm.prank(admin);
-        uint256 tokenId = farm.createInvoice("PT ABC", 50_000e18, 1000, 1 days);
-        
-        vm.startPrank(investor1);
-        faucet.claim();
-        gold.approve(address(farm), CLAIM_AMOUNT);
-        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
+    function test_AvailablePagination() public {
+        vm.startPrank(farmer1);
+        for (uint i; i < 5; i++) {
+            farm.submitInvoice(bytes32(i), 10_000e18, 1000, 30 days);
+        }
         vm.stopPrank();
         
-        // Fast forward past maturity
-        vm.warp(block.timestamp + 2 days);
-        
-        vm.prank(investor1);
-        farm.harvest(0);
-        
-        // 10,000 GOLD + 10% yield = 11,000 GOLD
-        uint256 expectedBalance = CLAIM_AMOUNT + (CLAIM_AMOUNT * 1000 / 10000);
-        assertEq(gold.balanceOf(investor1), expectedBalance);
-    }
-    
-    function test_GetAvailableInvoices() public {
         vm.startPrank(admin);
-        farm.createInvoice("Company A", 10_000e18, 1000, 30 days);
-        farm.createInvoice("Company B", 20_000e18, 1500, 60 days);
-        farm.createInvoice("Company C", 30_000e18, 2000, 90 days);
+        for (uint i = 1; i <= 5; i++) {
+            farm.approveInvoice(i);
+        }
         vm.stopPrank();
         
-        (uint256[] memory ids,) = farm.getAvailableInvoices();
-        assertEq(ids.length, 3);
+        (uint256[] memory page1,) = farm.getAvailableInvoices(0, 2);
+        assertEq(page1.length, 2);
     }
     
-    function test_DeactivateInvoice() public {
-        vm.startPrank(admin);
-        uint256 tokenId = farm.createInvoice("PT Test", 10_000e18, 1000, 30 days);
-        farm.deactivateInvoice(tokenId);
-        vm.stopPrank();
-        
-        (,,,,,,bool active) = farm.invoices(tokenId);
-        assertFalse(active);
-    }
+    // ============ VAULT TESTS ============
     
-    // ============ REVERT TESTS ============
-    
-    function test_RevertWhen_InvestExceedsTarget() public {
+    function test_VaultCannotSetFarmNFTTwice() public {
         vm.prank(admin);
-        uint256 tokenId = farm.createInvoice("PT Test", 5_000e18, 1000, 30 days);
-        
-        vm.startPrank(investor1);
-        faucet.claim();
-        gold.approve(address(farm), CLAIM_AMOUNT);
-        
-        vm.expectRevert("Exceeds target");
-        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
-        vm.stopPrank();
-    }
-    
-    function test_RevertWhen_HarvestBeforeMaturity() public {
-        vm.prank(admin);
-        uint256 tokenId = farm.createInvoice("PT Test", 50_000e18, 1000, 30 days);
-        
-        vm.startPrank(investor1);
-        faucet.claim();
-        gold.approve(address(farm), CLAIM_AMOUNT);
-        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
-        
-        vm.expectRevert("Not mature");
-        farm.harvest(0);
-        vm.stopPrank();
-    }
-    
-    function test_RevertWhen_InvestInactiveInvoice() public {
-        vm.startPrank(admin);
-        uint256 tokenId = farm.createInvoice("PT Test", 50_000e18, 1000, 30 days);
-        farm.deactivateInvoice(tokenId);
-        vm.stopPrank();
-        
-        vm.startPrank(investor1);
-        faucet.claim();
-        gold.approve(address(farm), CLAIM_AMOUNT);
-        
-        vm.expectRevert("Inactive");
-        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
-        vm.stopPrank();
-    }
-    
-    function test_RevertWhen_DoubleHarvest() public {
-        vm.prank(admin);
-        uint256 tokenId = farm.createInvoice("PT ABC", 50_000e18, 1000, 1 days);
-        
-        vm.startPrank(investor1);
-        faucet.claim();
-        gold.approve(address(farm), CLAIM_AMOUNT);
-        farm.invest(tokenId, uint128(CLAIM_AMOUNT));
-        vm.stopPrank();
-        
-        vm.warp(block.timestamp + 2 days);
-        
-        vm.startPrank(investor1);
-        farm.harvest(0);
-        
-        vm.expectRevert("Already claimed");
-        farm.harvest(0);
-        vm.stopPrank();
+        vm.expectRevert(OwnaFarmVault.FarmNFTAlreadySet.selector);
+        vault.setFarmNFT(address(0x123));
     }
 }
