@@ -1,66 +1,79 @@
-## Foundry
+# OwnaFarm Smart Contracts
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+> Mantle Sepolia Testnet | Chain ID: 5003
 
-Foundry consists of:
+## Contract Addresses
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+| Contract | Address |
+|----------|---------|
+| GoldToken | `0x...` |
+| GoldFaucet | `0x...` |
+| OwnaFarmNFT | `0x...` |
+| OwnaFarmVault | `0x...` |
 
-## Documentation
+---
 
-https://book.getfoundry.sh/
+## Functions Reference
 
-## Usage
+### GoldToken (ERC20)
 
-### Build
+| Function | Description |
+|----------|-------------|
+| `balanceOf(address)` | Get GOLD balance |
+| `approve(spender, amount)` | Approve spender to use tokens |
+| `transfer(to, amount)` | Transfer GOLD to address |
 
-```shell
-$ forge build
+### GoldFaucet
+
+| Function | Description |
+|----------|-------------|
+| `claim()` | Claim 10,000 GOLD (1x per 24h) |
+| `canClaim(address)` | Check if address can claim |
+| `timeUntilNextClaim(address)` | Seconds until next claim available |
+| `getBalance()` | Faucet remaining balance |
+
+### OwnaFarmNFT
+
+| Function | Description |
+|----------|-------------|
+| `createInvoice(offtaker, targetFund, yieldBps, duration)` | Admin: Create new invoice |
+| `invest(tokenId, amount)` | Invest GOLD into invoice |
+| `harvest(investmentIdx)` | Claim principal + yield after maturity |
+| `getInvestments(address)` | Get all investments by address |
+| `getInvestmentCount(address)` | Count investments |
+| `getAvailableInvoices()` | List all open invoices |
+| `invoices(tokenId)` | Get invoice details |
+| `deactivateInvoice(tokenId)` | Admin: Deactivate invoice |
+
+### OwnaFarmVault
+
+| Function | Description |
+|----------|-------------|
+| `depositYield(amount)` | Admin: Deposit yield reserve |
+| `getYieldReserve()` | Check yield reserve balance |
+
+---
+
+## Setup & Deploy
+
+```bash
+# Install
+forge install
+
+# Build
+forge build
+
+# Test
+forge test -vv
+
+# Deploy
+cp .env.example .env
+# Edit .env with your PRIVATE_KEY
+
+source .env
+forge script script/Deploy.s.sol:DeployOwnaFarm --rpc-url $RPC_URL --broadcast
 ```
 
-### Test
+---
 
-```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+**Built by YeheskielTame (OwnaFarm Team Lead)**
